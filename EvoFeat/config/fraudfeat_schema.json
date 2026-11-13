@@ -1,0 +1,834 @@
+{
+  "version": 4,
+  "format": "fraudfeat",
+  "description": "FraudFeat is a heterogeneous graph of payment accounts, customers, identity records, instruments, and operation events. Node and edge tables use snake_case field names, and relation values use the identifiers in relations[].en. This file defines entity types, fields, enum dictionaries, relation endpoints, stored directions, edge semantics, and companion evaluation files.",
+  "totals": {
+    "entity_types": 8,
+    "relation_types": 18,
+    "nodes": 12394721,
+    "edges": 18065212,
+    "labelled_accounts": 9004117
+  },
+  "conventions": {
+    "identifiers": "Every node has one unique_id. Edge endpoints reference these identifiers.",
+    "storage_direction": "Every relation is released as a single directed row set src -> dst. For non-transaction relations the underlying source association is undirected and was folded to one direction (see relations[].undirected). For transaction relations the stored direction records the endpoint the record was filed under, not the direction money moved: in wechat_pay_account_top_up_with_bank_card, wechat_pay_red_packet_funded_by_bank_card, merchant_payment_receipt_payee_side and merchant_refund_payee_side the funds move from dst to src.",
+    "vertex_property_comparison": "Vertex properties are compared as strings, e.g. has('state','Deregistered') or has('cre_type','Passport'). Numeric semantics apply only to the edge attributes total_amount, trade_count and top_k.",
+    "amount_unit": "total_amount is stored in Chinese renminbi fen (100 fen = 1 yuan)."
+  },
+  "coverage": {
+    "description": "The transaction relations are source-side pre-aggregated top-eight lists, not a complete transaction log. A counterparty appears only if it entered some endpoint's top-eight list, so degrees in these files are truncated by construction and must not be read as the true number of distinct counterparties.",
+    "top_eight_lists": {
+      "personal_wechat_pay_transfer_payee_side": "Each payee contributes at most eight out-edges: its top-eight payers by amount received.",
+      "personal_wechat_pay_transfer_payer_side": "Each payer contributes at most eight out-edges: its top-eight payees by amount sent.",
+      "merchant_payment_receipt_payer_side": "Each merchant contributes at most eight in-edges: its top-eight payers by amount received. Not every member of a merchant's list appears in this file, so ranks are not always contiguous.",
+      "merchant_payment_receipt_payee_side": "Each merchant contributes at most eight out-edges: its top-eight payers by amount received.",
+      "merchant_refund_payee_side": "Each merchant contributes at most eight in-edges: its top-eight refund recipients by amount refunded. Not every member of a merchant's list appears in this file.",
+      "merchant_refund_payer_side": "Each merchant contributes at most eight out-edges: its top-eight refund recipients by amount refunded.",
+      "wechat_pay_withdrawal_to_bank_card": "Per account-and-card aggregate; no top-eight truncation and no published rank.",
+      "wechat_pay_account_top_up_with_bank_card": "Per account-and-card aggregate; no top-eight truncation and no published rank.",
+      "wechat_pay_red_packet_funded_by_bank_card": "Per account-and-card aggregate; no top-eight truncation and no published rank.",
+      "wechat_pay_account_transfer_to_bank_card": "Per account-and-card aggregate; no top-eight truncation and no published rank."
+    },
+    "non_transaction_notes": "Non-transaction relations are folded bindings or event links, not aggregates, and are not truncated by rank."
+  },
+  "missing_value_policy": {
+    "description": "Some fields carry null and some carry a verbatim sentinel string; the sentinel values below denote missing values.",
+    "nulls": "Fields and edge attributes that can be null carry \"nullable\": true. Nullable node fields: merchant_pay_account.register_channel, register_status, subject_type, business_scene; individual_customer.last_dereg_time; natural_person.birthday, cre_start_date. Nullable edge attribute: top_k (every row of rel_04, rel_05, rel_06 and rel_09).",
+    "sentinels": [
+      {
+        "value": "0",
+        "fields": [
+          "wechat_pay_account.dereg_time"
+        ],
+        "meaning": "The account is not deregistered; exactly the rows with state = Registered carry this value."
+      },
+      {
+        "value": "00000000000000",
+        "fields": [
+          "wechat_pay_account.authen_time",
+          "wechat_pay_account.reg_time",
+          "wechat_pay_account.mobile_update_time"
+        ],
+        "meaning": "Unset timestamp (14 zero characters)."
+      },
+      {
+        "value": "00000000",
+        "fields": [
+          "natural_person.birthday"
+        ],
+        "meaning": "Unknown birthday."
+      },
+      {
+        "value": "9999-12-31",
+        "fields": [
+          "natural_person.cre_end_date"
+        ],
+        "meaning": "Long-term credential validity."
+      }
+    ]
+  },
+  "node_common_fields": [
+    {
+      "name": "unique_id",
+      "dtype": "string",
+      "description": "Globally unique node identifier; see conventions.identifiers."
+    },
+    {
+      "name": "entity_type",
+      "dtype": "string",
+      "description": "Entity type label; matches the containing entity's entity_type value and is constant within a node file."
+    }
+  ],
+  "edge_common_fields": [
+    {
+      "name": "src",
+      "dtype": "string",
+      "description": "Source endpoint identifier; references nodes.unique_id."
+    },
+    {
+      "name": "dst",
+      "dtype": "string",
+      "description": "Destination endpoint identifier; references nodes.unique_id."
+    },
+    {
+      "name": "relation",
+      "dtype": "string",
+      "description": "Snake_case relation identifier; matches relations[].en and is constant within an edge file."
+    }
+  ],
+  "transaction_edge_fields": [
+    {
+      "name": "total_amount",
+      "dtype": "int64",
+      "nullable": true,
+      "description": "Total transaction amount aggregated over trade_count transactions, in Chinese renminbi with unit fen (100 fen = 1 yuan); see conventions.amount_unit. Files that contain a null are stored as float64 in Parquet."
+    },
+    {
+      "name": "trade_count",
+      "dtype": "int64",
+      "nullable": false,
+      "description": "Number of transactions aggregated into the edge; at least 1."
+    },
+    {
+      "name": "top_k",
+      "dtype": "int64",
+      "nullable": true,
+      "description": "Source-system amount rank inside a top-eight counterparty list; 1 denotes the largest amount in that list. For personal_wechat_pay_transfer_payee_side, top_k is dst's rank among src's top-eight payers by amount received. For personal_wechat_pay_transfer_payer_side, it is dst's rank among src's top-eight payees by amount sent. For merchant_payment_receipt_payer_side and merchant_payment_receipt_payee_side, it has the same meaning in both edge directions: the personal WeChat account's rank among the merchant's top-eight payers by payment amount. For merchant_refund_payer_side and merchant_refund_payee_side, it likewise means the personal WeChat account's rank among the merchant's top-eight refund recipients by refund amount. For wechat_pay_withdrawal_to_bank_card, wechat_pay_account_top_up_with_bank_card, wechat_pay_red_packet_funded_by_bank_card and wechat_pay_account_transfer_to_bank_card, top_k is null for every row. The owning endpoint is also given per relation by relations[].top_k_ranked_within."
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "wechat_pay_account",
+      "description": "A personal WeChat Pay account with registration, verification, status, and deregistration attributes. Every account carries exactly one label in labels.parquet.",
+      "file": "nodes/wechat_pay_account.parquet",
+      "rows": 9004117,
+      "fields": [
+        {
+          "name": "authen_time",
+          "description": "Real-name verification time",
+          "dtype": "string",
+          "format": "yyyy-MM-dd HH:mm:ss",
+          "sentinel": "00000000000000"
+        },
+        {
+          "name": "mobile_update_time",
+          "description": "Contact information update time",
+          "dtype": "string",
+          "format": "yyyy-MM-dd HH:mm:ss",
+          "sentinel": "00000000000000"
+        },
+        {
+          "name": "reg_time",
+          "description": "Account registration time",
+          "dtype": "string",
+          "format": "yyyy-MM-dd HH:mm:ss",
+          "sentinel": "00000000000000"
+        },
+        {
+          "name": "state",
+          "description": "Account status; Registered holds exactly when dereg_time is the sentinel '0'",
+          "dtype": "string",
+          "enum_kind": "text",
+          "values": {
+            "Deregistered": "Deregistered",
+            "Registered": "Registered"
+          }
+        },
+        {
+          "name": "dereg_time",
+          "description": "Deregistration time; the literal '0' marks an account that is not deregistered",
+          "dtype": "string",
+          "format": "yyyy-MM-dd HH:mm:ss",
+          "sentinel": "0"
+        }
+      ]
+    },
+    {
+      "entity_type": "merchant_pay_account",
+      "description": "A merchant pay account with onboarding, registration, entity-classification, and business-scenario attributes.",
+      "file": "nodes/merchant_pay_account.parquet",
+      "rows": 536580,
+      "fields": [
+        {
+          "name": "apply_attr",
+          "description": "Merchant application attribute",
+          "dtype": "string",
+          "nullable": false,
+          "enum_kind": "text",
+          "values": {
+            "Not signed": "Not signed",
+            "Signed": "Signed"
+          }
+        },
+        {
+          "name": "register_channel",
+          "description": "Merchant onboarding channel",
+          "dtype": "string",
+          "nullable": true,
+          "enum_kind": "text",
+          "values": {
+            "WeChat Pay (Mainland China)": "WeChat Pay (Mainland China)",
+            "WeChat Pay (Shangjiatong)": "WeChat Pay (Shangjiatong)"
+          }
+        },
+        {
+          "name": "register_status",
+          "description": "Merchant registration status",
+          "dtype": "string",
+          "nullable": true,
+          "enum_kind": "text",
+          "values": {
+            "Deregistered": "Deregistered",
+            "Frozen": "Frozen",
+            "Registration successful": "Registration successful"
+          }
+        },
+        {
+          "name": "register_time",
+          "description": "Merchant onboarding date (date only, no time of day)",
+          "dtype": "string",
+          "format": "yyyy-MM-dd"
+        },
+        {
+          "name": "subject_type",
+          "description": "Merchant entity type",
+          "dtype": "string",
+          "nullable": true,
+          "enum_kind": "text",
+          "values": {
+            "Enterprise": "Enterprise",
+            "Government and public institutions": "Government and public institutions",
+            "Government public institution": "Government public institution",
+            "Incorporated enterprise": "Incorporated enterprise",
+            "Individually owned business": "Individually owned business",
+            "Other": "Other",
+            "Other organization": "Other organization",
+            "Party and government organs and public institutions": "Party and government organs and public institutions",
+            "Private non-enterprise organization": "Private non-enterprise organization",
+            "Self-employed individual": "Self-employed individual",
+            "Small and micro business": "Small and micro business",
+            "Small and micro merchant": "Small and micro merchant"
+          }
+        },
+        {
+          "name": "business_scene",
+          "description": "Business scenario",
+          "dtype": "string",
+          "nullable": true,
+          "enum_kind": "text",
+          "values": {
+            "App": "App",
+            "E-commerce": "E-commerce",
+            "Mini program": "Mini program",
+            "Mobile small-business operation / convenience service": "Mobile small-business operation / convenience service",
+            "Official account": "Official account",
+            "Offline": "Offline",
+            "Online goods / services transaction for small and micro businesses": "Online goods / services transaction for small and micro businesses",
+            "Small and micro store": "Small and micro store",
+            "WeCom": "WeCom",
+            "Website": "Website"
+          }
+        }
+      ]
+    },
+    {
+      "entity_type": "individual_customer",
+      "description": "An individual customer record linked to payment accounts and natural-person identities.",
+      "file": "nodes/individual_customer.parquet",
+      "rows": 1191147,
+      "fields": [
+        {
+          "name": "cre_type",
+          "description": "Credential type",
+          "dtype": "string",
+          "nullable": false,
+          "enum_kind": "text",
+          "values": {
+            "Foreigner residence permit": "Foreigner residence permit",
+            "Home return permit": "Home return permit",
+            "Identity card": "Identity card",
+            "Mainland travel permit for Taiwan residents": "Mainland travel permit for Taiwan residents",
+            "Passport": "Passport",
+            "Police officer ID": "Police officer ID",
+            "Residence permit for Hong Kong and Macao residents": "Residence permit for Hong Kong and Macao residents",
+            "Residence permit for Taiwan residents": "Residence permit for Taiwan residents"
+          }
+        },
+        {
+          "name": "first_authen_time",
+          "description": "Earliest real-name verification time",
+          "dtype": "string",
+          "format": "yyyy-MM-dd HH:mm:ss"
+        },
+        {
+          "name": "first_register_time",
+          "description": "Earliest registration time",
+          "dtype": "string",
+          "format": "yyyy-MM-dd HH:mm:ss"
+        },
+        {
+          "name": "last_dereg_time",
+          "description": "Most recent deregistration time; null for customers that were never deregistered",
+          "dtype": "string",
+          "nullable": true,
+          "format": "yyyy-MM-dd HH:mm:ss"
+        }
+      ]
+    },
+    {
+      "entity_type": "natural_person",
+      "description": "A natural-person identity with demographic and credential attributes.",
+      "file": "nodes/natural_person.parquet",
+      "rows": 1162192,
+      "fields": [
+        {
+          "name": "birthday",
+          "description": "Birthday (date only); null or the literal '00000000' when unknown",
+          "dtype": "string",
+          "nullable": true,
+          "format": "yyyy-MM-dd",
+          "sentinel": "00000000"
+        },
+        {
+          "name": "cre_end_date",
+          "description": "Credential validity end date (date only); '9999-12-31' marks long-term validity",
+          "dtype": "string",
+          "format": "yyyy-MM-dd",
+          "sentinel": "9999-12-31"
+        },
+        {
+          "name": "cre_start_date",
+          "description": "Credential validity start date (date only); null when the source did not record it",
+          "dtype": "string",
+          "nullable": true,
+          "format": "yyyy-MM-dd"
+        },
+        {
+          "name": "cre_type",
+          "description": "Credential type",
+          "dtype": "string",
+          "nullable": false,
+          "enum_kind": "text",
+          "values": {
+            "Foreigner residence permit": "Foreigner residence permit",
+            "Home return permit": "Home return permit",
+            "Identity card": "Identity card",
+            "Mainland travel permit for Taiwan residents": "Mainland travel permit for Taiwan residents",
+            "Passport": "Passport",
+            "Residence permit for Hong Kong and Macao residents": "Residence permit for Hong Kong and Macao residents",
+            "Residence permit for Taiwan residents": "Residence permit for Taiwan residents"
+          }
+        },
+        {
+          "name": "gender",
+          "description": "Gender",
+          "dtype": "string",
+          "nullable": false,
+          "enum_kind": "text",
+          "values": {
+            "Female": "Female",
+            "Male": "Male"
+          }
+        }
+      ]
+    },
+    {
+      "entity_type": "bank_card",
+      "description": "A structural bank-card endpoint.",
+      "file": "nodes/bank_card.parquet",
+      "rows": 366090,
+      "fields": []
+    },
+    {
+      "entity_type": "phone_number",
+      "description": "A phone-number endpoint linked to a personal WeChat Pay account.",
+      "file": "nodes/phone_number.parquet",
+      "rows": 35120,
+      "fields": []
+    },
+    {
+      "entity_type": "wechat_pay_bill_deletion_event",
+      "description": "An event representing the deletion of a WeChat Pay bill or wallet balance by a personal account.",
+      "file": "nodes/wechat_pay_bill_deletion_event.parquet",
+      "rows": 57892,
+      "fields": [
+        {
+          "name": "operation_type",
+          "description": "Operation type",
+          "dtype": "string",
+          "nullable": false,
+          "enum_kind": "text",
+          "values": {
+            "Delete bill": "Delete bill"
+          }
+        }
+      ]
+    },
+    {
+      "entity_type": "wechat_pay_card_back_information_query_event",
+      "description": "An event representing a query for bank-card-back information through WeChat Pay.",
+      "file": "nodes/wechat_pay_card_back_information_query_event.parquet",
+      "rows": 41583,
+      "fields": [
+        {
+          "name": "bank_card_type",
+          "description": "Bank card type as reported by the card issuer, formed as <bank abbreviation>_<DEBIT|CREDIT>, e.g. ICBC_DEBIT.",
+          "dtype": "string",
+          "nullable": false,
+          "enum_kind": "open",
+          "pattern": "^[A-Z][A-Z_]*_(DEBIT|CREDIT)$"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "index": 0,
+      "en": "personal_wechat_pay_transfer_payee_side",
+      "description": "A personal-to-personal WeChat Pay transfer stored from the payee's perspective: src is the account receiving money and dst is one of its payers. Each src row set is that payee's top-eight payer list, and top_k is dst's rank in it by total amount received; 1 denotes the largest amount.",
+      "is_trade": true,
+      "src_role": "personal_payee",
+      "dst_role": "personal_payer",
+      "top_k_ranked_within": "src",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "wechat_pay_account"
+        }
+      ],
+      "file": "edges/rel_00.parquet",
+      "rows": 2270678,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 1,
+      "en": "personal_wechat_pay_transfer_payer_side",
+      "description": "A personal-to-personal WeChat Pay transfer stored from the payer's perspective: src is the account sending money and dst is one of its payees. Each src row set is that payer's top-eight payee list, and top_k is dst's rank in it by total amount sent; 1 denotes the largest amount. Relation 0 and relation 1 are independent row sets drawn from the same transfer population.",
+      "is_trade": true,
+      "src_role": "personal_payer",
+      "dst_role": "personal_payee",
+      "top_k_ranked_within": "src",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "wechat_pay_account"
+        }
+      ],
+      "file": "edges/rel_01.parquet",
+      "rows": 2184039,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 2,
+      "en": "merchant_payment_receipt_payer_side",
+      "description": "A payment received by a merchant, stored on the payer side: src is the personal WeChat payer and dst is the merchant. top_k is the personal payer's rank among dst's (the merchant's) top-eight payers by total payment amount; the rank is owned by dst. Only part of a merchant's list appears in this file, so ranks are not always contiguous.",
+      "is_trade": true,
+      "src_role": "personal_payer",
+      "dst_role": "merchant_payee",
+      "top_k_ranked_within": "dst",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "merchant_pay_account"
+        }
+      ],
+      "file": "edges/rel_02.parquet",
+      "rows": 300540,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 3,
+      "en": "merchant_payment_receipt_payee_side",
+      "description": "The same merchant payment population viewed from the payee side: src is the merchant and dst is the personal WeChat payer, so the funds move dst -> src. top_k is dst's rank among src's (the merchant's) top-eight payers by total payment amount.",
+      "is_trade": true,
+      "src_role": "merchant_payee",
+      "dst_role": "personal_payer",
+      "top_k_ranked_within": "src",
+      "join_fields": [
+        {
+          "src": "merchant_pay_account",
+          "dst": "wechat_pay_account"
+        }
+      ],
+      "file": "edges/rel_03.parquet",
+      "rows": 109874,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 4,
+      "en": "wechat_pay_withdrawal_to_bank_card",
+      "description": "A withdrawal from a personal WeChat Pay account to a bank card: src is the account, dst is the card, and funds move src -> dst. top_k is null for every row.",
+      "is_trade": true,
+      "src_role": "personal_account",
+      "dst_role": "bank_card",
+      "top_k_ranked_within": null,
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "bank_card"
+        }
+      ],
+      "file": "edges/rel_04.parquet",
+      "rows": 237495,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 5,
+      "en": "wechat_pay_account_top_up_with_bank_card",
+      "description": "A top-up of a personal WeChat Pay account funded by a bank card: src is the account and dst is the funding card, so the funds move dst -> src. top_k is null for every row.",
+      "is_trade": true,
+      "src_role": "personal_account",
+      "dst_role": "funding_bank_card",
+      "top_k_ranked_within": null,
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "bank_card"
+        }
+      ],
+      "file": "edges/rel_05.parquet",
+      "rows": 151517,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 6,
+      "en": "wechat_pay_red_packet_funded_by_bank_card",
+      "description": "A WeChat Pay red-packet flow funded by a bank card: src is the account and dst is the funding card, so the funds move dst -> src. top_k is null for every row.",
+      "is_trade": true,
+      "src_role": "personal_account",
+      "dst_role": "funding_bank_card",
+      "top_k_ranked_within": null,
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "bank_card"
+        }
+      ],
+      "file": "edges/rel_06.parquet",
+      "rows": 44607,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 7,
+      "en": "merchant_refund_payee_side",
+      "description": "A merchant refund stored on the recipient side: src is the personal WeChat refund recipient and dst is the merchant, so the funds move dst -> src. top_k is src's rank among dst's (the merchant's) top-eight refund recipients by total refunded amount. Only part of a merchant's list appears in this file.",
+      "is_trade": true,
+      "src_role": "personal_refund_recipient",
+      "dst_role": "merchant_payer",
+      "top_k_ranked_within": "dst",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "merchant_pay_account"
+        }
+      ],
+      "file": "edges/rel_07.parquet",
+      "rows": 14462,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 8,
+      "en": "merchant_refund_payer_side",
+      "description": "The same merchant refund population viewed from the payer side: src is the merchant and dst is the personal WeChat refund recipient, so the funds move src -> dst. top_k is dst's rank among src's (the merchant's) top-eight refund recipients by total refunded amount.",
+      "is_trade": true,
+      "src_role": "merchant_payer",
+      "dst_role": "personal_refund_recipient",
+      "top_k_ranked_within": "src",
+      "join_fields": [
+        {
+          "src": "merchant_pay_account",
+          "dst": "wechat_pay_account"
+        }
+      ],
+      "file": "edges/rel_08.parquet",
+      "rows": 3134,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 9,
+      "en": "wechat_pay_account_transfer_to_bank_card",
+      "description": "A transfer from a personal WeChat Pay account to a bank card: src is the account and dst is the card, and funds move src -> dst. top_k is null for every row.",
+      "is_trade": true,
+      "src_role": "personal_account",
+      "dst_role": "bank_card",
+      "top_k_ranked_within": null,
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "bank_card"
+        }
+      ],
+      "file": "edges/rel_09.parquet",
+      "rows": 3231,
+      "props": [
+        "total_amount",
+        "trade_count",
+        "top_k"
+      ]
+    },
+    {
+      "index": 10,
+      "en": "wechat_pay_account_bind_individual_customer",
+      "description": "A binding between a personal WeChat Pay account and an individual customer record. The source association is undirected and was folded to wechat_pay_account -> individual_customer.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_account",
+      "dst_role": "individual_customer",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "individual_customer"
+        }
+      ],
+      "file": "edges/rel_10.parquet",
+      "rows": 5610423,
+      "props": []
+    },
+    {
+      "index": 11,
+      "en": "wechat_pay_account_bind_natural_person",
+      "description": "A binding between a personal WeChat Pay account and a natural-person identity, folded to wechat_pay_account -> natural_person.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_account",
+      "dst_role": "natural_person",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "natural_person"
+        }
+      ],
+      "file": "edges/rel_11.parquet",
+      "rows": 5450763,
+      "props": []
+    },
+    {
+      "index": 12,
+      "en": "wechat_pay_bill_deletion",
+      "description": "A bill-deletion event associated with a personal WeChat Pay account, folded to wechat_pay_account -> wechat_pay_bill_deletion_event.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_account",
+      "dst_role": "bill_deletion_event",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "wechat_pay_bill_deletion_event"
+        }
+      ],
+      "file": "edges/rel_12.parquet",
+      "rows": 57892,
+      "props": []
+    },
+    {
+      "index": 13,
+      "en": "wechat_pay_account_bind_phone_number",
+      "description": "A binding between a personal WeChat Pay account and a phone number, folded to wechat_pay_account -> phone_number.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_account",
+      "dst_role": "phone_number",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "phone_number"
+        }
+      ],
+      "file": "edges/rel_13.parquet",
+      "rows": 35125,
+      "props": []
+    },
+    {
+      "index": 14,
+      "en": "natural_person_bind_individual_customer",
+      "description": "A binding between a natural-person identity and an individual customer record, folded to natural_person -> individual_customer.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "natural_person",
+      "dst_role": "individual_customer",
+      "join_fields": [
+        {
+          "src": "natural_person",
+          "dst": "individual_customer"
+        }
+      ],
+      "file": "edges/rel_14.parquet",
+      "rows": 1144200,
+      "props": []
+    },
+    {
+      "index": 15,
+      "en": "personal_wechat_pay_account_is_merchant_super_administrator",
+      "description": "The personal WeChat Pay account is the merchant's super-administrator account, folded to wechat_pay_account -> merchant_pay_account.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_administrator",
+      "dst_role": "merchant_pay_account",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "merchant_pay_account"
+        }
+      ],
+      "file": "edges/rel_15.parquet",
+      "rows": 364254,
+      "props": []
+    },
+    {
+      "index": 16,
+      "en": "wechat_pay_account_bind_bank_card",
+      "description": "A binding between a personal WeChat Pay account and a bank card, folded to wechat_pay_account -> bank_card.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_account",
+      "dst_role": "bank_card",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "bank_card"
+        }
+      ],
+      "file": "edges/rel_16.parquet",
+      "rows": 41395,
+      "props": []
+    },
+    {
+      "index": 17,
+      "en": "wechat_pay_card_back_information_query",
+      "description": "A card-back information query event associated with a personal WeChat Pay account, folded to wechat_pay_account -> wechat_pay_card_back_information_query_event.",
+      "is_trade": false,
+      "undirected": true,
+      "src_role": "personal_account",
+      "dst_role": "card_back_query_event",
+      "join_fields": [
+        {
+          "src": "wechat_pay_account",
+          "dst": "wechat_pay_card_back_information_query_event"
+        }
+      ],
+      "file": "edges/rel_17.parquet",
+      "rows": 41583,
+      "props": []
+    }
+  ],
+  "labels": {
+    "file": "labels.parquet",
+    "scope": "wechat_pay_account",
+    "rows": 9004117,
+    "label_1": 276702,
+    "label_0": 8727415,
+    "positive_rate": 0.0307,
+    "description": "Fraud labels derived from the risk-source table for all released personal WeChat Pay accounts; every account has exactly one row.",
+    "fields": [
+      {
+        "name": "unique_id",
+        "dtype": "string",
+        "description": "References the unique_id of a personal WeChat Pay account."
+      },
+      {
+        "name": "label",
+        "dtype": "int64",
+        "description": "Binary fraud label for the referenced account.",
+        "values": {
+          "0": "Non-fraud label",
+          "1": "Fraud label"
+        }
+      }
+    ]
+  },
+  "splits": {
+    "description": "Fixed companion evaluation files stored under data/splits/.",
+    "panels": [
+      {
+        "file": "splits/offline_panel.parquet",
+        "rows": 6000,
+        "label_1": 1000,
+        "label_0": 5000,
+        "description": "Offline development panel."
+      },
+      {
+        "file": "splits/evaluation_panel.parquet",
+        "rows": 60000,
+        "label_1": 10000,
+        "label_0": 50000,
+        "description": "Evaluation panel for effectiveness, interpretability, and diversity measurements."
+      }
+    ],
+    "target_streams": {
+      "description": "Three discovery target files. Each file is a flat JSON array of 100 account identifiers with label 1.",
+      "files": [
+        {
+          "file": "splits/target_streams_s42.json",
+          "targets": 100,
+          "label_1": 100
+        },
+        {
+          "file": "splits/target_streams_s43.json",
+          "targets": 100,
+          "label_1": 100
+        },
+        {
+          "file": "splits/target_streams_s44.json",
+          "targets": 100,
+          "label_1": 100
+        }
+      ]
+    }
+  }
+}

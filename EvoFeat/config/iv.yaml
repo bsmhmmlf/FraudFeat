@@ -1,0 +1,33 @@
+mode: real
+samples_path: "data/samples/offline_panel.json"
+auto_collect: true
+collect_timeout_s: 1800
+panel_black: 1000
+panel_white: 5000
+random_seed: 42
+panel_min_hops: 0
+concurrency: 1
+max_feature_concurrency: 12
+pace_every_queries: 30
+pace_sleep_s: 0.2
+fail_breaker_min_done: 100
+fail_breaker_ratio: 0.8
+outage_cooldown_s: 600
+results_dir: "runs/default/iv_values"
+final_eval:
+  samples_path: "data/samples/evaluation_panel.json"
+  auto_collect: true
+  collect_timeout_s: 1800
+  panel_black: 10000
+  panel_white: 50000
+  random_seed: 42
+  panel_min_hops: 0
+  results_dir: "runs/default/final_iv_values"
+  use_run_env: false
+binning:
+  num_bins_numeric: 10
+  special_mass_ratio: 0.5
+  min_numeric_bin_ratio: 0.01
+  low_cardinality_threshold: 10
+  cat_min_ratio: 0.05
+  smoothing_factor: 0.5

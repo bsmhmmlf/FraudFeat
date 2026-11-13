@@ -1,0 +1,36 @@
+# Dataset files and local preparation
+/data/
+/dataprep/
+/dataprep_starrocks/
+
+# Downloaded or generated Release assets
+/SHA256SUMS
+*.tar.gz
+*.zip
+*.sha256
+
+# Generated artifacts
+results/
+_tmp*/
+*_tmp/
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local configuration
+.env
+.env.*
+secrets/
+*.secret.json
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

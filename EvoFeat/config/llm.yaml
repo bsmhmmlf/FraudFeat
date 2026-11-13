@@ -1,0 +1,22 @@
+api_url: "<YOUR_LLM_API_URL>"
+api_key: "<YOUR_LLM_API_KEY>"
+model: "hy4-preview"
+connect_timeout: 10
+timeout: 600
+max_retries: 3
+retry_base_delay: 5
+retry_max_delay: 40
+qpm: 20
+max_concurrency: 20
+default_temperature: 0.9
+default_max_tokens: 81920
+default_reasoning_effort: "high"
+supported_sampling_params:
+  - temperature
+  - top_p
+  - reasoning_effort
+  - max_completion_tokens
+embedding_url: "<YOUR_EMBEDDING_API_URL>"
+embedding_model: "<YOUR_EMBEDDING_MODEL>"
+embedding_api_key: "<YOUR_EMBEDDING_API_KEY>"
+embedding_qpm: 0

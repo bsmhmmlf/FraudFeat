@@ -93,6 +93,9 @@ def evaluate_public_run(run_dir: str | Path, data_dir: str | Path,
     overlap = offline_ids & final_ids
     if overlap:
         raise ValueError(f"D_off and D overlap on {len(overlap)} accounts")
+    overlap = discovery_ids & offline_ids
+    if overlap:
+        raise ValueError(f"Discovery targets and D_off overlap on {len(overlap)} accounts")
     if discovery_ids & final_ids:
         raise ValueError("Final evaluation panel overlaps discovery targets")
     records = load_panel_records(data_dir, evaluation_panel,

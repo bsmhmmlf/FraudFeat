@@ -122,8 +122,9 @@ def main(argv: list[str] | None = None) -> dict:
                         help="Public label population: wechat_pay_account")
     parser.add_argument("--target-sample", type=int, default=100,
                         help="Number of target vids sampled in live mode (default 100)")
-    parser.add_argument("--random-seed", type=int, default=20260825,
-                        help="StarRocks sampling seed in live mode (default 20260825)")
+    parser.add_argument("--random-seed", type=int, default=None,
+                        help="Discovery/sampling seed (default: 42 with --data; "
+                             "20260825 otherwise)")
     parser.add_argument("--per-hop-caps", type=str, default="50,250,500,1000,2000",
                         help="Comma-separated new-node caps per hop in live mode; length sets the "
                              "default hop limit (default 50,250,500,1000,2000)")
@@ -175,6 +176,11 @@ def main(argv: list[str] | None = None) -> dict:
     args = parser.parse_args(argv)
     if args.data and args.input:
         parser.error("--data and --input are mutually exclusive")
+    if args.random_seed is None:
+        args.random_seed = 42 if args.data else 20260825
+    if args.data and args.targets is None:
+        args.targets = str(Path(args.data).expanduser().resolve()
+                           / "splits" / f"target_streams_s{args.random_seed}.json")
     run_dir = None
     if args.run_id:
         run_dir = ensure_dir(RUNS_DIR / args.run_id)

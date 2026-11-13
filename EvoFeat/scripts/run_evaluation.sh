@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
-RUNS=${RUNS:-runs}
+if [[ -n "${RUNS:-}" ]]; then
+  RUNS=$(resolve_input_path "$RUNS")
+else
+  RUNS="$REPO_ROOT/runs"
+fi
 POOL_LIMIT=${POOL_LIMIT:-100}
 WORKERS=${WORKERS:-8}
 STABILITY=${STABILITY:-20}

@@ -30,11 +30,26 @@ def _public_panel_ids(path: Path) -> set[str]:
     return {str(value) for value in frame["unique_id"].tolist()}
 
 
+def _features_sha256(features: list[dict]) -> str:
+    """Fingerprint only feature definitions that affect public effectiveness evaluation."""
+    definitions = [{
+        "feature_name": str(feature.get("feature_name") or f"feature_{index}"),
+        "pool_index": int(feature.get("pool_index", index)),
+        "expected_value_type": str(feature.get("expected_value_type") or ""),
+        "gremlin_plan": feature.get("plan") or feature.get("gremlin_plan") or {},
+    } for index, feature in enumerate(features)]
+    encoded = json.dumps(definitions, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def evaluate_public_run(run_dir: str | Path, data_dir: str | Path,
                         evaluation_panel: str | Path | None = None,
                         limit: int = 100, force: bool = False) -> dict:
     """Evaluate the public run through the exact shared FraudFeat implementations."""
-    from system.execution.parquet_backend import load_panel_records, fraudfeat_module
+    from system.execution.parquet_backend import (
+        fraudfeat_module, load_panel_records, public_ids,
+    )
     run_dir = Path(run_dir).resolve()
     data_dir = Path(data_dir).expanduser().resolve()
     evaluation_panel = (Path(evaluation_panel) if evaluation_panel
@@ -48,14 +63,33 @@ def evaluate_public_run(run_dir: str | Path, data_dir: str | Path,
     evaluation_features = fraudfeat_module("pool").prepare_features(features)
     evaluation_selected = evaluation_features[:limit] if limit > 0 else evaluation_features
     summary_run = _read_json(run_dir / "run_summary.json", {})
-    offline_panel = Path(summary_run.get("offline_panel") or data_dir / "offline_panel.parquet")
-    targets_path = summary_run.get("targets_path")
-    discovery_ids = set()
-    if targets_path and Path(targets_path).is_file():
-        target_obj = _read_json(Path(targets_path), {})
-        discovery_ids = {str(uid) for uid in target_obj.get("labels") or []}
-    offline_ids = _public_panel_ids(offline_panel) if offline_panel.is_file() else set()
+    offline_panel = Path(
+        summary_run.get("offline_panel") or data_dir / "splits" / "offline_panel.parquet"
+    ).expanduser()
+    if not offline_panel.is_file():
+        raise FileNotFoundError(f"Offline evaluation panel not found: {offline_panel}")
+    targets_value = summary_run.get("targets_path")
+    if targets_value:
+        targets_path = Path(targets_value).expanduser()
+    else:
+        seed = summary_run.get("random_seed")
+        if seed is None:
+            raise ValueError(
+                "run_summary.json must record targets_path or random_seed for public evaluation")
+        targets_path = data_dir / "splits" / f"target_streams_s{seed}.json"
+    if not targets_path.is_file():
+        raise FileNotFoundError(f"Discovery target file not found: {targets_path}")
+    discovery_ids = set(public_ids(targets_path))
+    if not discovery_ids:
+        raise ValueError(f"Discovery target file is empty: {targets_path}")
+    if not evaluation_panel.is_file():
+        raise FileNotFoundError(f"Final evaluation panel not found: {evaluation_panel}")
+    offline_ids = _public_panel_ids(offline_panel)
     final_ids = _public_panel_ids(evaluation_panel)
+    if not offline_ids:
+        raise ValueError(f"Offline evaluation panel is empty: {offline_panel}")
+    if not final_ids:
+        raise ValueError(f"Final evaluation panel is empty: {evaluation_panel}")
     overlap = offline_ids & final_ids
     if overlap:
         raise ValueError(f"D_off and D overlap on {len(overlap)} accounts")
@@ -70,6 +104,7 @@ def evaluate_public_run(run_dir: str | Path, data_dir: str | Path,
     effectiveness = fraudfeat_module("effectiveness")
     effectiveness_path = run_dir / "effectiveness.jsonl"
     summary_path = run_dir / "effectiveness_summary.json"
+    features_sha256 = _features_sha256(evaluation_selected)
     rows = None
     if not force and effectiveness_path.is_file() and summary_path.is_file():
         cached = [json.loads(line) for line in effectiveness_path.read_text(
@@ -79,6 +114,7 @@ def evaluate_public_run(run_dir: str | Path, data_dir: str | Path,
                          + f"#{int(feature.get('pool_index', index))}"
                          for index, feature in enumerate(evaluation_selected)]
         if (cached_summary.get("panel_sha256") == panel_sha256
+                and cached_summary.get("features_sha256") == features_sha256
                 and len(cached) == len(evaluation_selected)
                 and [str(row.get("entry_key")) for row in cached] == expected_keys):
             rows = cached
@@ -110,9 +146,10 @@ def evaluate_public_run(run_dir: str | Path, data_dir: str | Path,
     eval_summary.update({
         "features_in": len(features), "eval_size": len(eval_ids),
         "data_dir": str(data_dir), "evaluation_panel": str(evaluation_panel),
-        "offline_panel": str(offline_panel), "amount_unit": "fen",
-        "id_list_limit": 300, "discovery_targets_excluded": len(discovery_ids),
-        "panel_sha256": panel_sha256,
+        "offline_panel": str(offline_panel), "targets_path": str(targets_path),
+        "amount_unit": "fen", "id_list_limit": 300,
+        "discovery_targets_excluded": len(discovery_ids),
+        "panel_sha256": panel_sha256, "features_sha256": features_sha256,
     })
     _write_json(summary_path, eval_summary)
     report = effectiveness.render_report(

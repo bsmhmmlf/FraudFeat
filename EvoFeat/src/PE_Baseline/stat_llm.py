@@ -803,10 +803,13 @@ def call_api_multiround(
 
 
 class MultiRoundRiskAnalyzer:
-    def __init__(self, subgraph: Dict, target_account: str, graph_stats: Dict = None):
+    def __init__(self, subgraph: Dict, target_account: str, graph_stats: Dict = None,
+                 model: str = MODEL_NAME, temperature: float = 0.9):
         self.subgraph = subgraph
         self.target_account = target_account
         self.graph_stats = graph_stats or {}
+        self.model = model
+        self.temperature = temperature
         self.multi_round_context = []
 
     def run_round1(self) -> str:
@@ -815,7 +818,8 @@ class MultiRoundRiskAnalyzer:
         messages = [
             {"role": "user", "content": user_prompt}
         ]
-        response, tokens_used = call_api_multiround(messages)
+        response, tokens_used = call_api_multiround(
+            messages, model=self.model, temperature=self.temperature)
         logger.info(f"[{self.target_account}] Round 1 completed, tokens used: {tokens_used}")
         logger.debug(f"[{self.target_account}] Round 1 response:\n{response}")
         self.multi_round_context.append(response)
@@ -827,7 +831,8 @@ class MultiRoundRiskAnalyzer:
         messages = [
             {"role": "user", "content": user_prompt}
         ]
-        response, tokens_used = call_api_multiround(messages)
+        response, tokens_used = call_api_multiround(
+            messages, model=self.model, temperature=self.temperature)
         logger.info(f"[{self.target_account}] Round 2 completed, tokens used: {tokens_used}")
         logger.debug(f"[{self.target_account}] Round 2 response:\n{response}")
         self.multi_round_context.append(response)
@@ -841,7 +846,8 @@ class MultiRoundRiskAnalyzer:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        response, tokens_used = call_api_multiround(messages, max_tokens=16000)
+        response, tokens_used = call_api_multiround(
+            messages, model=self.model, temperature=self.temperature, max_tokens=16000)
         logger.info(f"[{self.target_account}] Final Round completed, tokens used: {tokens_used}")
         logger.debug(f"[{self.target_account}] Final Round response:\n{response}")
         return response
@@ -924,7 +930,9 @@ def process_single_subgraph(subgraph: Dict[str, Any], index: int,
 
     print("    Running multi-round analysis...")
     t0 = time.time()
-    analyzer = MultiRoundRiskAnalyzer(formatted_subgraph, target_id, graph_stats=graph_stats)
+    analyzer = MultiRoundRiskAnalyzer(
+        formatted_subgraph, target_id, graph_stats=graph_stats,
+        model=model, temperature=temperature)
     analysis_result = analyzer.run_full_analysis()
 
     elapsed = time.time() - t0

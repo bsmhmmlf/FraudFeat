@@ -11,8 +11,13 @@ TARGET_SAMPLE=${TARGET_SAMPLE:-100}
 OFFLINE_PANEL=${OFFLINE_PANEL:-"$DATA/splits/offline_panel.parquet"}
 EVAL_PANEL=${EVAL_PANEL:-"$DATA/splits/evaluation_panel.parquet"}
 TARGETS=${TARGETS:-"$DATA/splits/target_streams_s${SEED}.json"}
+DATA=$(resolve_input_path "$DATA")
+OFFLINE_PANEL=$(resolve_input_path "$OFFLINE_PANEL")
+EVAL_PANEL=$(resolve_input_path "$EVAL_PANEL")
+TARGETS=$(resolve_input_path "$TARGETS")
 NO_EMBED=${NO_EMBED:-0}
 NO_JUDGE=${NO_JUDGE:-0}
+FORCE=${FORCE:-0}
 
 if [ ! -f "$TARGETS" ] || [ ! -f "$OFFLINE_PANEL" ] || [ ! -f "$EVAL_PANEL" ]; then
   echo "Official splits not found under $DATA/splits/ (target streams + panels)." >&2
@@ -22,5 +27,5 @@ fi
 "$PY" -m system.main --data "$DATA" --offline-panel "$OFFLINE_PANEL" \
   --targets "$TARGETS" --run-id "$RUN_ID" --random-seed "$SEED" \
   --target-sample "$TARGET_SAMPLE" --max-episodes "$EPISODES" --episode-size "$EPISODE_SIZE"
-NO_EMBED="$NO_EMBED" NO_JUDGE="$NO_JUDGE" EVAL_PANEL="$EVAL_PANEL" \
+NO_EMBED="$NO_EMBED" NO_JUDGE="$NO_JUDGE" EVAL_PANEL="$EVAL_PANEL" FORCE="$FORCE" \
   bash "$SCRIPT_DIR/run_public_evaluation.sh" "$DATA" "$REPO_ROOT/runs/$RUN_ID"

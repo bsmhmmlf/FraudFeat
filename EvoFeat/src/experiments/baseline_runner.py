@@ -386,7 +386,7 @@ def _import_baseline(name: str):
             def _run(eng, idx, pre=None):
                 _PRE["cur"] = pre
                 try:
-                    return arm.process_single_subgraph(eng, idx)
+                    return arm.process_single_subgraph(eng, idx, model=_model())
                 finally:
                     _PRE["cur"] = None
             return _run
@@ -396,7 +396,7 @@ def _import_baseline(name: str):
             def _run(eng, idx, pre=None):
                 _PRE["cur"] = pre
                 try:
-                    return arg_.process_subgraph_graphrag(eng, idx)
+                    return arg_.process_subgraph_graphrag(eng, idx, model=_model())
                 finally:
                     _PRE["cur"] = None
             return _run

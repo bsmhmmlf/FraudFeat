@@ -9,17 +9,24 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
+DATA=$(resolve_input_path "$DATA")
 POOL_LIMIT=${POOL_LIMIT:-100}
-EVAL_PANEL=${EVAL_PANEL:-"$DATA/splits/evaluation_panel.parquet"}
+EVAL_PANEL=$(resolve_input_path "${EVAL_PANEL:-$DATA/splits/evaluation_panel.parquet}")
 NO_EMBED=${NO_EMBED:-0}
 NO_JUDGE=${NO_JUDGE:-0}
+FORCE=${FORCE:-0}
+FINAL_EVAL_ARGS=()
+if [[ "$FORCE" == "1" ]]; then
+  FINAL_EVAL_ARGS+=(--force)
+fi
 JUDGES=${JUDGES:-${FRAUDFEAT_JUDGE_MODEL:-deepseek-v4-pro,gpt-6.1-sol,claude-opus-5.5}}
 EMBED_MODEL=${FRAUDFEAT_EMBED_MODEL:-Qwen3-Embedding-0.6B}
 WORKERS=${WORKERS:-4}
 
 for RUN in "$@"; do
+  RUN=$(resolve_input_path "$RUN")
   "$PY" -m experiments.final_eval --run-dir "$RUN" --data "$DATA" \
-    --evaluation-panel "$EVAL_PANEL" --limit "$POOL_LIMIT"
+    --evaluation-panel "$EVAL_PANEL" --limit "$POOL_LIMIT" "${FINAL_EVAL_ARGS[@]}"
   if [[ "$NO_EMBED" != "1" ]]; then
     "$PY" -m fraudfeat.embedding_diversity --features "$RUN/features.json" \
       --out-dir "$RUN" --pool-limit "$POOL_LIMIT" --iv-jsonl "$RUN/effectiveness.jsonl" \

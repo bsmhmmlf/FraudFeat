@@ -14,6 +14,7 @@ execution is implemented in ``gremlin_engine.py``.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -43,6 +44,49 @@ def labels_from_frame(df: pd.DataFrame, source: str | Path) -> Dict[str, int]:
     if values.isna().any() or not values.isin([0, 1]).all():
         raise ValueError(f"Label file {source} must contain only binary 0/1 labels")
     return {str(uid): int(value) for uid, value in zip(df["unique_id"], values)}
+
+
+_EMPTY_POSITIONS = np.empty(0, dtype=np.int64)
+
+
+class _AdjacencyIndex(Mapping):
+    """Compact read-only endpoint index with stable per-vertex edge order.
+
+    Store one flat position array plus group offsets instead of allocating a
+    Python dictionary entry and NumPy array for every incident vertex. Stable
+    sorting preserves source-file order, including parallel edges and self-loops.
+    """
+
+    def __init__(self, endpoints: pd.Series):
+        codes, keys = pd.factorize(endpoints, sort=False)
+        missing = codes < 0
+        counts = np.bincount(codes[~missing], minlength=len(keys))
+        self._offsets = np.empty(len(keys) + 1, dtype=np.int64)
+        self._offsets[0] = 0
+        np.cumsum(counts, out=self._offsets[1:])
+        # Missing endpoints are omitted, as in groupby(...).indices.
+        order = np.argsort(codes, kind="stable")
+        self._positions = order[int(missing.sum()):].astype(np.int64, copy=False)
+        self._keys = pd.Index([str(key) for key in keys], dtype=object)
+        self._groups = None
+        if not self._keys.is_unique:
+            # Match the former dict's last-wins behavior for non-string input
+            # keys that have the same string representation.
+            keep = ~self._keys.duplicated(keep="last")
+            self._groups = np.flatnonzero(keep)
+            self._keys = self._keys[keep]
+
+    def __getitem__(self, key: str) -> np.ndarray:
+        group = self._keys.get_loc(key)
+        if self._groups is not None:
+            group = self._groups[group]
+        return self._positions[self._offsets[group]:self._offsets[group + 1]]
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
 
 
 class GraphStore:
@@ -93,19 +137,21 @@ class GraphStore:
                     frames.append(df)
             if frames:
                 self.edges = pd.concat(frames, ignore_index=True)
+                frames.clear()
+                del df  # Do not retain source frames while building the indexes.
                 if "edge_id" not in self.edges.columns:
                     self.edges["edge_id"] = [f"{i + 1:020d}" for i in range(len(self.edges))]
                 for col in ("total_amount", "trade_count", "top_k"):
                     if col in self.edges.columns:
                         self.edges[col] = pd.to_numeric(self.edges[col], errors="coerce")
-        self._out: Dict[str, np.ndarray] = {}
-        self._in: Dict[str, np.ndarray] = {}
+        self._edge_prop_cache: Dict[str, np.ndarray] = {}
+        self._out: Mapping = {}
+        self._in: Mapping = {}
         if build_adjacency and not self.edges.empty:
             self._build_adjacency()
         self.labels: Dict[str, int] = {}
         if load_labels:
             self.load_labels()
-        self._edge_prop_cache: Dict[str, np.ndarray] = {}
 
     @staticmethod
     def _read(path: Path) -> pd.DataFrame:
@@ -116,12 +162,12 @@ class GraphStore:
         return pd.read_parquet(path)
 
     def _build_adjacency(self) -> None:
-        g = self.edges.reset_index(drop=True)
-        self.edges = g
-        src_groups = g.groupby("src", sort=False).indices
-        dst_groups = g.groupby("dst", sort=False).indices
-        self._out = {str(k): np.asarray(v, dtype=np.int64) for k, v in src_groups.items()}
-        self._in = {str(k): np.asarray(v, dtype=np.int64) for k, v in dst_groups.items()}
+        # concat already produces this index; avoid copying all edge columns.
+        if not self.edges.index.equals(pd.RangeIndex(len(self.edges))):
+            self.edges = self.edges.reset_index(drop=True)
+        self._edge_prop_cache.clear()
+        self._out = _AdjacencyIndex(self.edges["src"])
+        self._in = _AdjacencyIndex(self.edges["dst"])
 
     def load_labels(self) -> Dict[str, int]:
         declared = str((self.schema.get("labels") or {}).get("file") or "")
@@ -154,21 +200,22 @@ class GraphStore:
             return None
 
     def node_value(self, uid: str, prop: str) -> Any:
-        row = self.vertex(uid)
-        if row is None:
+        uid = str(uid)
+        ent = self.entity_of.get(uid)
+        if ent is None:
+            return None
+        df = self.nodes.get(ent)
+        if df is None or uid not in df.index:
             return None
         if prop in ("id", "unique_id"):
-            return str(uid)
-        if prop == "entity_type":
-            value = row.get("entity_type")
-            if value is not None and not pd.isna(value) and str(value):
-                return str(value)
-            return self.entity_of.get(str(uid))
+            return uid
         if prop == "label":
-            return self.entity_of.get(str(uid))
-        if prop in row.index:
-            return row[prop]
-        return None
+            return ent
+        # Scalar access avoids materializing a heterogeneous row for every has().
+        value = df.at[uid, prop] if prop in df.columns else None
+        if prop == "entity_type":
+            return str(value) if value is not None and not pd.isna(value) and str(value) else ent
+        return value
 
     def iter_vertices(self) -> Iterable[Tuple[str, str]]:
         for ent, df in self.nodes.items():
@@ -185,30 +232,48 @@ class GraphStore:
     def incident(self, uid: str, direction: str = "both") -> np.ndarray:
         uid = str(uid)
         if direction == "out":
-            return self._out.get(uid, np.empty(0, dtype=np.int64))
+            return self._out.get(uid, _EMPTY_POSITIONS)
         if direction == "in":
-            return self._in.get(uid, np.empty(0, dtype=np.int64))
-        a = self._out.get(uid, np.empty(0, dtype=np.int64))
-        b = self._in.get(uid, np.empty(0, dtype=np.int64))
+            return self._in.get(uid, _EMPTY_POSITIONS)
+        a = self._out.get(uid, _EMPTY_POSITIONS)
+        b = self._in.get(uid, _EMPTY_POSITIONS)
+        # Keep out-then-in order and the existing double appearance of self-loops.
         return np.concatenate([a, b]) if len(b) else a
+
+    def _edge_column(self, prop: str) -> np.ndarray:
+        """Convert each accessed column once, not once per traversal/account.
+
+        The store is read-only after construction. Numeric columns retain their
+        dtype; endpoint, relation and edge-ID columns use object arrays exactly
+        as the public accessors did before caching.
+        """
+        values = self._edge_prop_cache.get(prop)
+        if values is None:
+            dtype = object if prop in ("src", "dst", "relation", "edge_id") else None
+            values = self.edges[prop].to_numpy(dtype=dtype, copy=False)
+            self._edge_prop_cache[prop] = values
+        return values
 
     def edge_endpoint(self, positions: np.ndarray, side: str) -> np.ndarray:
         col = "src" if side in ("src", "other_src") else "dst"
         if len(positions) == 0:
             return np.empty(0, dtype=object)
-        return self.edges.iloc[positions][col].to_numpy(dtype=object)
+        return self._edge_column(col)[positions]
 
     def edge_values(self, positions: np.ndarray, prop: str) -> np.ndarray:
         if len(positions) == 0:
             return np.empty(0, dtype=object)
-        df = self.edges.iloc[positions]
-        if prop == "relation":
-            return df["relation"].to_numpy(dtype=object)
         if prop in ("id", "edge_id"):
-            return df["edge_id"].to_numpy(dtype=object)
-        if prop in df.columns:
-            return df[prop].to_numpy()
-        return np.array([None] * len(df), dtype=object)
+            prop = "edge_id"
+        if prop in self.edges.columns:
+            column = self.edges[prop]
+            if (prop not in ("src", "dst", "relation", "edge_id")
+                    and isinstance(column.dtype, pd.api.extensions.ExtensionDtype)):
+                # Convert nullable/extension values after selecting: converting
+                # a full nullable Int64 column first can round large integers.
+                return column.array.take(positions).to_numpy()
+            return self._edge_column(prop)[positions]
+        return np.full(len(positions), None, dtype=object)
 
     def relation_meta(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}

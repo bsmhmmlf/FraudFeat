@@ -1,0 +1,216 @@
+name: Release data audit (isolated branch)
+
+on:
+  push:
+    branches: [audit/release-data-20261113]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CODE_SHA: faf8e0486c761db38eca9365842a818e243bc18a
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+    steps:
+      - name: Check out fixed code revision without credentials
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth 1 origin "$CODE_SHA"
+          git checkout --detach FETCH_HEAD
+          git rev-parse HEAD
+          free -h
+          df -h .
+      - name: Download Release and verify complete archive
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/data-v1.0.0"
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 600 "$BASE/fraudfeat-data-v1.0.0.tar.gz" -o fraudfeat-data-v1.0.0.tar.gz
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 60 "$BASE/SHA256SUMS" -o SHA256SUMS
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+          echo '5ffff21b914c191c8dd5e2ed154869c94d0e505942e00e5068dde3e9f634f984  fraudfeat-data-v1.0.0.tar.gz' | sha256sum -c -
+          python3 - <<'PY'
+          import pathlib, tarfile
+          p = pathlib.Path('fraudfeat-data-v1.0.0.tar.gz')
+          print('ARCHIVE_BYTES', p.stat().st_size, flush=True)
+          with tarfile.open(p, 'r:gz') as archive:
+              members = archive.getmembers()
+              for member in members:
+                  path = pathlib.PurePosixPath(member.name)
+                  if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] != 'data':
+                      raise ValueError('Unexpected archive path: ' + member.name)
+                  if not (member.isfile() or member.isdir()):
+                      raise ValueError('Non-regular archive entry: ' + member.name)
+              print('ARCHIVE_MEMBERS', len(members), 'EXPANDED_BYTES', sum(m.size for m in members), flush=True)
+              archive.extractall('.', filter='data')
+          PY
+      - name: Install local evaluation package
+        run: |
+          set -euo pipefail
+          python3 -m venv .audit-venv
+          .audit-venv/bin/python -m pip install -e ./evaluation
+          echo "$PWD/.audit-venv/bin" >> "$GITHUB_PATH"
+      - name: Run existing evaluation test suite
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m unittest discover -s evaluation/tests -t evaluation -v 2>&1 | tee audit-unit-tests.log
+      - name: Audit all Parquet files, graph endpoints and official splits
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee audit-data.log
+          import itertools, json, pathlib, time
+          import duckdb
+          import pandas as pd
+          import pyarrow.parquet as pq
+          data = pathlib.Path('data')
+          schema = json.loads((data / 'schema.json').read_text(encoding='utf-8'))
+          report = {'code_sha': 'faf8e0486c761db38eca9365842a818e243bc18a', 'data_release': 'data-v1.0.0', 'parquet': [], 'nodes': [], 'edges': [], 'splits': {}, 'errors': []}
+          def emit(name, obj):
+              print(name, json.dumps(obj, ensure_ascii=False, default=str), flush=True)
+          def check(condition, message):
+              if not condition:
+                  report['errors'].append(message)
+                  emit('CHECK_FAILED', message)
+          def quote(value):
+              return "'" + str(value).replace("'", "''") + "'"
+          def scan(relative):
+              path = data / relative
+              if not path.is_file():
+                  raise FileNotFoundError(path)
+              return 'read_parquet(' + quote(path) + ')'
+          start = time.monotonic()
+          files = sorted(data.rglob('*.parquet'))
+          check(len(files) == 29, 'Expected 29 Parquet files (8 nodes, 18 edges, labels and 2 panels)')
+          for path in files:
+              pf = pq.ParquetFile(path)
+              rows = 0
+              for batch in pf.iter_batches(batch_size=65536):
+                  batch.validate(full=True)
+                  rows += batch.num_rows
+              check(rows == pf.metadata.num_rows, 'Decoded row count differs from metadata: ' + str(path))
+              info = {'file': str(path.relative_to(data)), 'rows': rows, 'columns': pf.schema_arrow.names}
+              report['parquet'].append(info)
+              emit('PARQUET_READ', info)
+          con = duckdb.connect()
+          con.execute("SET memory_limit='3GB'")
+          con.execute('SET threads=2')
+          con.execute("SET temp_directory='.audit-duckdb-temp'")
+          for ent in schema['entities']:
+              source = scan(ent['file'])
+              required = {'unique_id', 'entity_type'} | {f['name'] for f in ent.get('fields', [])}
+              names = set(pq.ParquetFile(data / ent['file']).schema_arrow.names)
+              check(required <= names, 'Missing node fields for ' + ent['entity_type'] + ': ' + str(sorted(required - names)))
+              rows, distinct_ids, empty_ids, wrong_types = con.execute('SELECT COUNT(*), COUNT(DISTINCT unique_id), COUNT(*) FILTER (WHERE unique_id IS NULL OR CAST(unique_id AS VARCHAR) = \'\'), COUNT(*) FILTER (WHERE entity_type IS DISTINCT FROM ' + quote(ent['entity_type']) + ') FROM ' + source).fetchone()
+              info = {'entity_type': ent['entity_type'], 'rows': rows, 'duplicate_ids': rows - distinct_ids - empty_ids, 'empty_ids': empty_ids, 'wrong_types': wrong_types}
+              report['nodes'].append(info)
+              emit('NODE_CHECK', info)
+              check(rows == distinct_ids and empty_ids == 0 and wrong_types == 0, 'Node integrity failed for ' + ent['entity_type'])
+          node_union = ' UNION ALL '.join('SELECT CAST(unique_id AS VARCHAR) AS unique_id, CAST(entity_type AS VARCHAR) AS entity_type FROM ' + scan(e['file']) for e in schema['entities'])
+          con.execute('CREATE TABLE vertices AS ' + node_union)
+          total_nodes, unique_nodes = con.execute('SELECT COUNT(*), COUNT(DISTINCT unique_id) FROM vertices').fetchone()
+          report['node_totals'] = {'nodes': total_nodes, 'unique_ids': unique_nodes}
+          check(total_nodes == unique_nodes, 'Node identifiers are not globally unique')
+          check(total_nodes == 12394721, 'Node count differs from README')
+          total_edges = 0
+          for rel in schema['relations']:
+              source = scan(rel['file'])
+              columns = set(pq.ParquetFile(data / rel['file']).schema_arrow.names)
+              required = {'src', 'dst', 'relation'} | ({'total_amount', 'trade_count', 'top_k'} if rel.get('is_trade') else set())
+              check(required <= columns, 'Missing edge fields for ' + rel['en'])
+              rows, wrong_relation, empty_ends = con.execute('SELECT COUNT(*), COUNT(*) FILTER (WHERE relation IS DISTINCT FROM ' + quote(rel['en']) + '), COUNT(*) FILTER (WHERE src IS NULL OR dst IS NULL OR CAST(src AS VARCHAR) = \'\' OR CAST(dst AS VARCHAR) = \'\') FROM ' + source).fetchone()
+              groups = con.execute('SELECT s.entity_type, d.entity_type, COUNT(*) FROM ' + source + ' AS e LEFT JOIN vertices AS s ON e.src = s.unique_id LEFT JOIN vertices AS d ON e.dst = d.unique_id GROUP BY 1,2').fetchall()
+              allowed = {(p.get('src'), p.get('dst')) for p in rel.get('join_fields', [])}
+              missing_src = sum(n for s, d, n in groups if s is None)
+              missing_dst = sum(n for s, d, n in groups if d is None)
+              wrong_endpoint_type = sum(n for s, d, n in groups if s is not None and d is not None and (s, d) not in allowed)
+              info = {'relation': rel['en'], 'rows': rows, 'wrong_relation': wrong_relation, 'empty_endpoints': empty_ends, 'unknown_src': missing_src, 'unknown_dst': missing_dst, 'wrong_endpoint_types': wrong_endpoint_type, 'endpoint_type_counts': groups}
+              if rel.get('is_trade'):
+                  bad_trade, bad_rank = con.execute('SELECT COUNT(*) FILTER (WHERE trade_count IS NULL OR trade_count < 1 OR trade_count != FLOOR(trade_count)), COUNT(*) FILTER (WHERE top_k IS NOT NULL AND (top_k < 1 OR top_k > 8 OR top_k != FLOOR(top_k))) FROM ' + source).fetchone()
+                  info.update({'invalid_trade_count': bad_trade, 'invalid_rank': bad_rank})
+                  check(bad_trade == 0 and bad_rank == 0, 'Transaction attributes failed for ' + rel['en'])
+              total_edges += rows
+              report['edges'].append(info)
+              emit('EDGE_CHECK', info)
+              check(not (wrong_relation or empty_ends or missing_src or missing_dst or wrong_endpoint_type), 'Edge integrity failed for ' + rel['en'])
+          report['edge_total'] = total_edges
+          check(total_edges == 18065212, 'Edge count differs from README')
+          con.execute('CREATE TABLE labels AS SELECT CAST(unique_id AS VARCHAR) AS unique_id, label FROM ' + scan('labels.parquet'))
+          nlab, ulab, invalid_labels = con.execute('SELECT COUNT(*), COUNT(DISTINCT unique_id), COUNT(*) FILTER (WHERE unique_id IS NULL OR unique_id = \'\' OR label IS NULL OR label NOT IN (0,1)) FROM labels').fetchone()
+          unknown_labels = con.execute("SELECT COUNT(*) FROM labels AS l LEFT JOIN vertices AS n ON l.unique_id=n.unique_id WHERE n.unique_id IS NULL OR n.entity_type <> 'wechat_pay_account'").fetchone()[0]
+          class_counts = dict(con.execute('SELECT label, COUNT(*) FROM labels GROUP BY label').fetchall())
+          report['labels'] = {'rows': nlab, 'unique_ids': ulab, 'invalid_labels': invalid_labels, 'unknown_or_nonaccount_ids': unknown_labels, 'class_counts': class_counts}
+          emit('LABEL_CHECK', report['labels'])
+          check(nlab == ulab and invalid_labels == 0 and unknown_labels == 0, 'Label integrity failed')
+          check(nlab == 9004117 and class_counts.get(1) == 276702 and class_counts.get(0) == 8727415, 'Label counts differ from README')
+          sets = {}
+          for name, expected_counts in [('offline_panel', {0: 5000, 1: 1000}), ('evaluation_panel', {0: 50000, 1: 10000})]:
+              panel = pd.read_parquet(data / 'splits' / (name + '.parquet'))
+              check({'unique_id', 'label'} <= set(panel.columns), 'Missing panel columns: ' + name)
+              ids = panel['unique_id'].astype(str)
+              sets[name] = set(ids)
+              counts = {int(k): int(v) for k, v in panel['label'].value_counts(dropna=False).items()}
+              con.register('panel_df', panel)
+              mismatches = con.execute('SELECT COUNT(*) FROM panel_df p LEFT JOIN labels l ON p.unique_id=l.unique_id WHERE l.unique_id IS NULL OR p.label IS DISTINCT FROM l.label').fetchone()[0]
+              info = {'rows': len(panel), 'unique_ids': len(sets[name]), 'class_counts': counts, 'label_or_membership_mismatches': mismatches}
+              report['splits'][name] = info
+              emit('PANEL_CHECK', info)
+              check(len(panel) == len(sets[name]) and counts == expected_counts and mismatches == 0, 'Panel integrity or size failed: ' + name)
+              con.unregister('panel_df')
+          for seed in [42,43,44]:
+              name = 'target_streams_s' + str(seed)
+              raw = json.loads((data / 'splits' / (name + '.json')).read_text(encoding='utf-8'))
+              items = raw.get('labels', []) if isinstance(raw, dict) else raw
+              ids = [str(x) for x in items]
+              sets[name] = set(ids)
+              frame = pd.DataFrame({'unique_id': ids})
+              con.register('targets_df', frame)
+              bad = con.execute('SELECT COUNT(*) FROM targets_df t LEFT JOIN labels l ON t.unique_id=l.unique_id WHERE l.unique_id IS NULL OR l.label <> 1').fetchone()[0]
+              info = {'rows': len(ids), 'unique_ids': len(sets[name]), 'unknown_or_nonfraudulent': bad}
+              report['splits'][name] = info
+              emit('TARGET_CHECK', info)
+              check(len(ids) == 100 and len(sets[name]) == 100 and bad == 0, 'Target integrity failed: ' + name)
+              con.unregister('targets_df')
+          overlaps = {}
+          for a, b in itertools.combinations(sets, 2):
+              size = len(sets[a] & sets[b])
+              overlaps[a + ' / ' + b] = size
+              if not (a.startswith('target_') and b.startswith('target_')):
+                  check(size == 0, 'Forbidden split overlap: ' + a + ' / ' + b)
+          report['split_overlaps'] = overlaps
+          emit('SPLIT_OVERLAPS', overlaps)
+          report['elapsed_seconds'] = round(time.monotonic() - start, 2)
+          report['status'] = 'PASS' if not report['errors'] else 'FAIL'
+          pathlib.Path('audit-data-summary.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding='utf-8')
+          emit('DATA_AUDIT_SUMMARY', report)
+          raise SystemExit(bool(report['errors']))
+          PY
+      - name: Evaluate SQL examples on the complete graph and official final panel
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          /usr/bin/time -v timeout 600s python -m fraudfeat.sql_effectiveness --data data --features evaluation/examples/features.sql.example.jsonl --eval-panel data/splits/evaluation_panel.parquet --out-dir audit-results/sql --pool-limit 100 2>&1 | tee audit-sql.log
+      - name: Evaluate constrained Gremlin examples on the complete graph and official final panel
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          /usr/bin/time -v timeout 600s python -m fraudfeat.effectiveness --data data --features evaluation/examples/features.example.jsonl --eval-panel data/splits/evaluation_panel.parquet --out-dir audit-results/gremlin --pool-limit 100 2>&1 | tee audit-gremlin.log
+      - name: Print actual evaluation outputs
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          for path in sorted(pathlib.Path('audit-results').rglob('*')):
+              if path.is_file() and path.suffix in {'.json', '.jsonl', '.txt'}:
+                  print('\n=== RESULT_FILE', path, '===', flush=True)
+                  text = path.read_text(encoding='utf-8')
+                  print(text[:150000], flush=True)
+          PY

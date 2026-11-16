@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evofeat"
+version = "0.1.0"
+description = "EvoFeat: self-evolving multi-agent fraud-graph feature mining"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dynamic = ["dependencies"]
+
+[project.scripts]
+evofeat = "system.main:cli"
+risk-features = "system.main:cli"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["system*", "experiments*", "PE_Baseline*"]
+exclude = ["*.__pycache__", "*.__pycache__.*"]
+
+[tool.setuptools.package-data]
+system = ["data/graph_res/*.txt"]
+
+[tool.setuptools.data-files]
+"share/evofeat/config" = ["config/*.yaml", "config/fraudfeat_schema.json"]

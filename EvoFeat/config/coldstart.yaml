@@ -1,0 +1,11 @@
+enabled: false
+reset: false
+sources: []
+cleaning:
+  mr_drop: 0.99
+  mr_soft: 0.95
+  soft_iv_min: 0.5
+inject:
+  eval_cap: 150
+  skill_min_cluster: 3
+  concurrency: 5

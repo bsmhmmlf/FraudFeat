@@ -1,0 +1,353 @@
+[
+  {
+    "feature_name": "customer_upstream_payer_recipient_count",
+    "family": "identity_transfer_reverse_fanout",
+    "expected_value_type": "count",
+    "hops": 4,
+    "logic": "Find the seed's customer records and their associated accounts. From those accounts, follow payee-side transfer edges to upstream payers, then traverse the same relation in reverse to the payers' recipients. Count distinct final accounts, including any accounts also reached earlier.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "in", "hop": 4}
+    ],
+    "business_explanation": "This feature measures the recipient breadth of payers connected to an identity-associated account neighborhood. It can support review of shared collection and distribution activity when combined with the accounts' observed economic roles.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Accounts associated with those customers", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().has('entity_type', 'wechat_pay_account').dedup().id().toList()"},
+        {"id": "s3", "desc": "Payers of the associated accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Recipients paid by those payers", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'personal_wechat_pay_transfer_payee_side').outV().dedup().id().toList()"}
+      ],
+      "final": {"type": "count", "step": "s4"}
+    }
+  },
+  {
+    "feature_name": "shared_recipient_customer_account_count",
+    "family": "transfer_first_identity_reexpansion",
+    "expected_value_type": "count",
+    "hops": 4,
+    "logic": "Follow the seed's outgoing payer-side transfers to recipients, then reverse the same relation to accounts sharing those recipients. Expand those accounts' customer records back to associated accounts. Count terminal accounts having a natural-person binding. The first two steps form a shared-recipient pattern, not two consecutive downstream payments.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "out", "hop": 1},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 3},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 4}
+    ],
+    "business_explanation": "The feature extends a payment-counterparty neighborhood through customer associations and a natural-person qualification. It describes account connectivity across payment and identity roles rather than assuming all reached accounts share one controller.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Recipients paid by the seed", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'personal_wechat_pay_transfer_payer_side').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Accounts paying those recipients", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'personal_wechat_pay_transfer_payer_side').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Customer records of the co-payers", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Natural-person-qualified accounts associated with the reached customers", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().where(__.outE().has('relation', 'wechat_pay_account_bind_natural_person')).dedup().id().toList()"}
+      ],
+      "final": {"type": "count", "step": "s4"}
+    }
+  },
+  {
+    "feature_name": "customer_associated_payment_recipient_count",
+    "family": "identity_anchored_direct_payment",
+    "expected_value_type": "count",
+    "hops": 3,
+    "logic": "Find customer records directly bound to the seed, reverse-expand the accounts bound to those records, and follow their outgoing payer-side transfers. Count distinct recipient accounts.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "out", "hop": 3}
+    ],
+    "business_explanation": "This compact feature measures payment reach across the seed's customer-associated account neighborhood. It provides an interpretable distribution statistic that can complement payment amounts and identity-sharing counts.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Outgoing payment recipients", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payer_side').inV().dedup().id().toList()"}
+      ],
+      "final": {"type": "count", "step": "s3"}
+    }
+  },
+  {
+    "feature_name": "reached_customer_to_initial_customer_ratio",
+    "family": "customer_identity_normalization",
+    "expected_value_type": "ratio",
+    "hops": 3,
+    "logic": "Expand the seed's customer records to associated accounts and then to their customer records. Divide the number of distinct terminal customer records by the number of distinct first-hop customer records. Initial records remain in the numerator when reachable; a zero denominator produces 0.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 3}
+    ],
+    "business_explanation": "The ratio describes customer-record breadth relative to the seed's initial customer associations. It is a record-reach normalization, not a claim that every reached record is a new or different real-world person.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Initial customer-record denominator", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Accounts associated with initial customers", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Reached customer-record numerator", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"}
+      ],
+      "final": {"type": "ratio", "numerator_step": "s3", "numerator_mode": "count", "denominator_step": "s1", "denominator_mode": "count"}
+    }
+  },
+  {
+    "feature_name": "natural_person_reach_per_customer_ratio",
+    "family": "cross_identity_record_normalization",
+    "expected_value_type": "ratio",
+    "hops": 3,
+    "logic": "Find the seed's customer records, reverse-expand associated accounts, and collect those accounts' natural-person records. Divide distinct terminal natural-person records by distinct initial customer records, with 0 for a zero denominator.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_natural_person", "to": "natural_person", "direction": "out", "hop": 3}
+    ],
+    "business_explanation": "This feature measures cross-record identity breadth after customer-mediated account expansion. Normalization separates the reached natural-person set from the seed's initial number of customer associations.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Initial customer-record denominator", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Reached natural-person numerator", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'wechat_pay_account_bind_natural_person').inV().dedup().id().toList()"}
+      ],
+      "final": {"type": "ratio", "numerator_step": "s3", "numerator_mode": "count", "denominator_step": "s1", "denominator_mode": "count"}
+    }
+  },
+  {
+    "feature_name": "alternating_identity_account_expansion_ratio",
+    "family": "dual_identity_account_normalization",
+    "expected_value_type": "ratio",
+    "hops": 4,
+    "logic": "Follow the seed's natural-person records back to accounts, then follow those accounts' customer records back to accounts. Divide distinct fourth-hop accounts by distinct first-hop natural-person records. The denominator is an identity-record set, not the initial account set; zero produces 0.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_natural_person", "to": "natural_person", "direction": "out", "hop": 1},
+      {"from": "natural_person", "rel": "wechat_pay_account_bind_natural_person", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 3},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 4}
+    ],
+    "business_explanation": "The ratio characterizes account reach through two different identity record types. It complements single-medium association statistics while making the normalization population explicit.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Initial natural-person denominator", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_natural_person').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Accounts associated with initial natural-person records", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_natural_person').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Customer records of those accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Terminal account numerator", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"}
+      ],
+      "final": {"type": "ratio", "numerator_step": "s4", "numerator_mode": "count", "denominator_step": "s1", "denominator_mode": "count"}
+    }
+  },
+  {
+    "feature_name": "customer_reverse_relay_terminal_customer_count",
+    "family": "identity_transfer_identity_customer_endpoint",
+    "expected_value_type": "count",
+    "hops": 5,
+    "logic": "Expand customer-associated accounts, find their upstream payers with an outgoing payee-side step, and find those payers' recipients with the reverse step. Collect and count the distinct customer records bound to the reached recipient accounts.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "in", "hop": 4},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 5}
+    ],
+    "business_explanation": "This feature ends a mixed identity-transfer path at customer records rather than account counterparties. It measures how broadly the payment neighborhood connects to identity records and complements direct fan-out counts.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Upstream payer accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Recipients paid by the reached payers", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'personal_wechat_pay_transfer_payee_side').outV().dedup().id().toList()"},
+        {"id": "s5", "desc": "Terminal customer records", "depends_on": ["s4"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s4}})).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"}
+      ],
+      "final": {"type": "count", "step": "s5"}
+    }
+  },
+  {
+    "feature_name": "customer_forward_relay_natural_person_count",
+    "family": "identity_transfer_identity_natural_person_endpoint",
+    "expected_value_type": "count",
+    "hops": 5,
+    "logic": "Expand customer-associated accounts, follow their outgoing payer-side transfers, and then traverse incoming payee-side edges from the reached accounts to those accounts' recipients. Count the natural-person records bound to the final recipient accounts. The second transfer step is economically forward even though it uses an incoming stored edge.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "in", "hop": 4},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_natural_person", "to": "natural_person", "direction": "out", "hop": 5}
+    ],
+    "business_explanation": "The feature connects a customer-associated payment neighborhood to terminal natural-person records. It offers a distinct identity endpoint and transfer direction from reverse-relay customer-record counts.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "First payment recipients", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payer_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Recipients paid by the reached accounts", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'personal_wechat_pay_transfer_payee_side').outV().dedup().id().toList()"},
+        {"id": "s5", "desc": "Terminal natural-person records", "depends_on": ["s4"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s4}})).outE().has('relation', 'wechat_pay_account_bind_natural_person').inV().dedup().id().toList()"}
+      ],
+      "final": {"type": "count", "step": "s5"}
+    }
+  },
+  {
+    "feature_name": "customer_copayer_received_amount_fen",
+    "family": "identity_shared_recipient_collection_amount",
+    "expected_value_type": "amount",
+    "amount_unit": "fen",
+    "hops": 5,
+    "logic": "Expand customer-associated accounts, follow their outgoing payments to recipients, and reverse the payer-side relation to the recipients' other payers. Sum total_amount on outgoing payee-side edges of the reached co-payers. Those edges measure receipts of the reached accounts, not their outgoing payments. Values remain integer RMB fen.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "in", "hop": 4},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 5}
+    ],
+    "business_explanation": "This feature measures collection scale in a shared-recipient payment neighborhood connected to the seed's customer associations. It complements account-count features by capturing the monetary activity of the reached payer accounts.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Recipients paid by those accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payer_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Co-payers of the reached recipients", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'personal_wechat_pay_transfer_payer_side').outV().dedup().id().toList()"},
+        {"id": "s5", "desc": "Receipt amount of reached co-payers", "depends_on": ["s4"], "output": "scalar", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s4}})).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').dedup().values('total_amount').sum()"}
+      ],
+      "final": {"type": "scalar", "step": "s5"}
+    }
+  },
+  {
+    "feature_name": "customer_payment_relay_withdrawal_amount_fen",
+    "family": "identity_payment_withdrawal_amount",
+    "expected_value_type": "amount",
+    "amount_unit": "fen",
+    "hops": 4,
+    "logic": "Expand the seed's customer-associated accounts, follow their outgoing payer-side transfers to recipients, and sum those recipients' withdrawal-to-bank-card edge amounts. The monetary result is the terminal withdrawal aggregate, in RMB fen, rather than the preceding transfer amount.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payer_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_withdrawal_to_bank_card", "to": "bank_card", "direction": "out", "hop": 4}
+    ],
+    "business_explanation": "The feature links an identity-associated payment neighborhood to bank-card withdrawal activity. It can support review of cash-out concentration while keeping the recipient's role separate from any claim of common ownership.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Recipients paid by those accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payer_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Terminal withdrawal amount in fen", "depends_on": ["s3"], "output": "scalar", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).outE().has('relation', 'wechat_pay_withdrawal_to_bank_card').dedup().values('total_amount').sum()"}
+      ],
+      "final": {"type": "scalar", "step": "s4"}
+    }
+  },
+  {
+    "feature_name": "customer_reverse_relay_receipt_amount_fen",
+    "family": "identity_reverse_relay_collection_amount",
+    "expected_value_type": "amount",
+    "amount_unit": "fen",
+    "hops": 5,
+    "logic": "Expand customer-associated accounts and follow a payee-side out/in/out sequence through upstream payers, their recipients, and the latter accounts' payers. Sum total_amount on the final outgoing payee-side transfer edges. These edges measure receipts of the fourth-hop recipient set, and values remain integer RMB fen.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "in", "hop": 4},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 5}
+    ],
+    "business_explanation": "The feature measures receipt scale across an identity-linked, mixed-direction transfer relay. It complements terminal account and identity counts by capturing the monetary activity of the reached recipient neighborhood.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Upstream payers", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Recipients paid by those payers", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'personal_wechat_pay_transfer_payee_side').outV().dedup().id().toList()"},
+        {"id": "s5", "desc": "Receipt amount of the reached recipient set", "depends_on": ["s4"], "output": "scalar", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s4}})).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').dedup().values('total_amount').sum()"}
+      ],
+      "final": {"type": "scalar", "step": "s5"}
+    }
+  },
+  {
+    "feature_name": "customer_administered_merchant_receipt_amount_fen",
+    "family": "identity_merchant_administration_receipt_amount",
+    "expected_value_type": "amount",
+    "amount_unit": "fen",
+    "hops": 4,
+    "logic": "Expand customer-associated accounts and find merchants reached through the public super-administrator relation. Sum total_amount on the merchants' outgoing payee-side receipt edges. Receipt payers need not belong to the original customer-associated account set. Values remain RMB fen.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_account_is_merchant_super_administrator", "to": "merchant_pay_account", "direction": "out", "hop": 3},
+      {"from": "merchant_pay_account", "rel": "merchant_payment_receipt_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 4}
+    ],
+    "business_explanation": "The feature links observed account associations to the payment activity of administered merchants. It supports an interpretable view of administrator-associated business collection rather than assigning merchant fraud status from management alone.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Merchants administered by those accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_account_is_merchant_super_administrator').inV().has('entity_type', 'merchant_pay_account').dedup().id().toList()"},
+        {"id": "s4", "desc": "Merchant receipt amount in fen", "depends_on": ["s3"], "output": "scalar", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).outE().has('relation', 'merchant_payment_receipt_payee_side').dedup().values('total_amount').sum()"}
+      ],
+      "final": {"type": "scalar", "step": "s4"}
+    }
+  },
+  {
+    "feature_name": "customer_associated_merchant_administration_flag",
+    "family": "identity_merchant_administration_existence",
+    "expected_value_type": "flag",
+    "hops": 3,
+    "logic": "Expand the seed's customer-associated accounts and test whether any reached account has an outgoing public super-administrator relation to a merchant. Return 1 when the merchant endpoint set is nonempty and 0 otherwise.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_account_is_merchant_super_administrator", "to": "merchant_pay_account", "direction": "out", "hop": 3}
+    ],
+    "business_explanation": "The flag identifies a merchant management role within an observed account-association neighborhood. It complements merchant receipt amounts by separating structural administration from payment scale.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Customer-associated accounts", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Administered merchant endpoints", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_account_is_merchant_super_administrator').inV().has('entity_type', 'merchant_pay_account').dedup().id().toList()"}
+      ],
+      "final": {"type": "exists", "step": "s3"}
+    }
+  },
+  {
+    "feature_name": "alternating_transfer_four_step_account_count",
+    "family": "pure_transfer_alternating_topology",
+    "expected_value_type": "count",
+    "hops": 4,
+    "logic": "Starting from the seed, traverse personal_wechat_pay_transfer_payee_side in the ordered directions out, in, out, in. Count distinct terminal accounts. This is a four-step upstream/downstream topology walk, not evidence that the same funds passed through three successive recipients.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 1},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "out", "hop": 3},
+      {"from": "wechat_pay_account", "rel": "personal_wechat_pay_transfer_payee_side", "to": "wechat_pay_account", "direction": "in", "hop": 4}
+    ],
+    "business_explanation": "The statistic provides a transfer-only comparison with identity-anchored features. It captures repeated payer/recipient neighborhood reach while allowing earlier accounts to reappear in the final set.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "First upstream payer set", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "Recipients of the payer set", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'personal_wechat_pay_transfer_payee_side').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Payers of those recipients", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'personal_wechat_pay_transfer_payee_side').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Terminal recipient accounts", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'personal_wechat_pay_transfer_payee_side').outV().dedup().id().toList()"}
+      ],
+      "final": {"type": "count", "step": "s4"}
+    }
+  },
+  {
+    "feature_name": "two_customer_bridge_bank_card_binding_flag",
+    "family": "identity_bank_card_binding_existence",
+    "expected_value_type": "flag",
+    "hops": 5,
+    "logic": "Follow two customer/account identity bridges and then an outgoing bank-card binding from the terminal account set. Return 1 when any bank_card endpoint exists and 0 otherwise. The flag measures an association, not a withdrawal or a transfer.",
+    "evidence_chain": [
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 1},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 2},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_individual_customer", "to": "individual_customer", "direction": "out", "hop": 3},
+      {"from": "individual_customer", "rel": "wechat_pay_account_bind_individual_customer", "to": "wechat_pay_account", "direction": "in", "hop": 4},
+      {"from": "wechat_pay_account", "rel": "wechat_pay_account_bind_bank_card", "to": "bank_card", "direction": "out", "hop": 5}
+    ],
+    "business_explanation": "This feature extends a repeated identity walk to a payment-instrument endpoint. It complements withdrawal amounts by describing instrument association independently of monetary activity.",
+    "gremlin_plan": {
+      "steps": [
+        {"id": "s1", "desc": "Seed customer records", "depends_on": [], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId({{SEED}}).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s2", "desc": "First customer-associated account set", "depends_on": ["s1"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s1}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s3", "desc": "Customer records of the reached accounts", "depends_on": ["s2"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s2}})).outE().has('relation', 'wechat_pay_account_bind_individual_customer').inV().dedup().id().toList()"},
+        {"id": "s4", "desc": "Second customer-associated account set", "depends_on": ["s3"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s3}})).inE().has('relation', 'wechat_pay_account_bind_individual_customer').outV().dedup().id().toList()"},
+        {"id": "s5", "desc": "Bound bank-card endpoints", "depends_on": ["s4"], "output": "id_list", "gremlin": "g_fraudfeat.V().hasId(within({{STEP:s4}})).outE().has('relation', 'wechat_pay_account_bind_bank_card').inV().has('entity_type', 'bank_card').dedup().id().toList()"}
+      ],
+      "final": {"type": "exists", "step": "s5"}
+    }
+  }
+]

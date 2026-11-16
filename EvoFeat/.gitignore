@@ -1,0 +1,35 @@
+# Python and packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Generated data and experiments
+/data/
+runs/
+/config/static_agent/*
+!/config/static_agent/*.md
+*.log
+src/system/results/
+src/system/memory/*.json
+src/system/scripts/data/
+
+# Local configuration
+.env
+.env.*
+*.secret.*
+secrets/
+private/
+internal/
+*.xlsx
+*.xls
+*.xlsm
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

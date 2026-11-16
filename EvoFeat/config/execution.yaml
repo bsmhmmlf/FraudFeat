@@ -1,0 +1,26 @@
+enabled: false
+space: "<YOUR_GRAPH_SPACE>"
+username: "<YOUR_GRAPH_USER>"
+password: "<YOUR_GRAPH_PASSWORD>"
+polaris_ns: "<YOUR_POLARIS_NAMESPACE>"
+polaris_svc: "<YOUR_POLARIS_SERVICE>"
+fixed_servers: ""
+starrocks:
+  host: "<YOUR_STARROCKS_HOST>"
+  port: 9030
+  user: "<YOUR_STARROCKS_USER>"
+  password: "<YOUR_STARROCKS_PASSWORD>"
+  database: "<YOUR_STARROCKS_DATABASE>"
+  charset: "utf8mb4"
+explore_live:
+  per_hop_caps: "50,250,500,1000,2000"
+  min_hops: 3
+  probe_min_hops: 0
+  edge_limit: 5000
+  probe_max_frontier: 50
+  probe_quiet: true
+  induced_edges: true
+  target_cache:
+    enabled: true
+    oversample: 5
+    dir: "data/target_cache"
